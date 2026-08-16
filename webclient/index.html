@@ -5071,6 +5071,7 @@ const stallWatchdog = {
 let micStream = null;
 let micCtx = null;
 let micNode = null;
+let nativeMic = false;
 let capturing = false;   // mic graph is live
 let isHeld = false;      // button physically held — one of the two gates on outbound audio
 let openMic = false;         // mode flag: true iff the server reports wake word enabled
@@ -5199,6 +5200,20 @@ async function startCapture(isOpenMic) {
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
   } catch (e) {
+    if (window.AndroidPatchbay && window.AndroidPatchbay.startMic()) {
+      nativeMic = true;
+      if (isOpenMic) {
+        openMicStreaming = true;
+        els.ptt.disabled = true;
+        els.pttCaption.textContent = `Wake word armed — say "${openMicPhrase}"`;
+      } else {
+        els.ptt.classList.add("recording");
+        els.pttCaption.textContent = "Listening… (release to send)";
+        setStatus("connected", "recording");
+      }
+      log("native Android microphone capture started");
+      return;
+    }
     capturing = false;
     if (isOpenMic) {
       // No prior grant (or a browser that needs a gesture): do NOT loop — hand control
@@ -5277,8 +5292,23 @@ async function startCapture(isOpenMic) {
   }
 }
 
+// Older Echo/Fire WebViews mark private-CA HTTPS as insecure, disabling getUserMedia.
+// Native host frames are 16 kHz mono Int16, matching the WebAudio worklet output.
+window.__patchbayNativePcm = (b64) => {
+  if (!nativeMic || !(isHeld || (openMicStreaming && !assistantAudioActive())) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const raw = atob(b64);
+  const bytes = new Uint8Array(raw.length);
+  let peak = 0;
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  const pcm = new Int16Array(bytes.buffer);
+  for (const sample of pcm) peak = Math.max(peak, Math.abs(sample) / 32768);
+  pushWaveform(peak);
+  ws.send(bytes.buffer);
+};
+
 // Tear down the mic graph and release the device. Safe to call with partial/null state.
 function teardownMic() {
+  if (nativeMic) { window.AndroidPatchbay?.stopMic(); nativeMic = false; }
   try { if (micNode) micNode.disconnect(); } catch {}
   try { if (micStream) micStream.getTracks().forEach(t => t.stop()); } catch {}
   try { if (micCtx) micCtx.close(); } catch {}

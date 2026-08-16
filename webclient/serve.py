@@ -15,6 +15,7 @@ doesn't spam the voice-agent websocket server with bare-TCP-connect noise.
 import argparse
 import json
 import os
+import socket
 import ssl
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
@@ -63,9 +64,11 @@ class Handler(SimpleHTTPRequestHandler):
     @staticmethod
     def _voice_agent_listening():
         port_hex = "%04X" % VOICE_AGENT_PORT
+        found_proc = False
         for path in ("/proc/net/tcp", "/proc/net/tcp6"):
             try:
                 with open(path) as f:
+                    found_proc = True
                     next(f)  # header line
                     for line in f:
                         fields = line.split()
@@ -75,6 +78,13 @@ class Handler(SimpleHTTPRequestHandler):
                             return True
             except OSError:
                 continue
+        if not found_proc:
+            # ponytail: macOS has no /proc; a short loopback probe is the small portable fallback.
+            try:
+                with socket.create_connection(("127.0.0.1", VOICE_AGENT_PORT), timeout=0.2):
+                    return True
+            except OSError:
+                pass
         return False
 
     def end_headers(self):
